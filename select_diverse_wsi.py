@@ -60,17 +60,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def log_ok(path: str, tissue: str, elapsed: float, tissue_ratio: float, progress_pct: float) -> None:
-    print(
-        f"[OK] progress={progress_pct:.1f}% tissue={tissue} "
-        f"path={path} time={elapsed:.3f}s tissue_ratio={tissue_ratio:.4f}"
-    )
-
-
-def log_fail(path: str, err: str, progress_pct: float) -> None:
-    print(f"[FAIL] progress={progress_pct:.1f}% path={path} err={err}")
-
-
 def discover_wsi_paths(input_dir: str, extensions: str) -> List[str]:
     root = Path(input_dir)
     if not root.exists():
@@ -279,50 +268,63 @@ def run(args: argparse.Namespace) -> int:
         print("No input files found.", file=sys.stderr)
         return 2
 
+    tissue_to_paths: Dict[str, List[str]] = {}
+    for path in paths:
+        tissue = infer_tissue_type(path, args.input_dir)
+        tissue_to_paths.setdefault(tissue, []).append(path)
+
     features: List[np.ndarray] = []
     ok_rows: List[Dict[str, object]] = []
     failed_rows: List[Dict[str, str]] = []
     warnings = 0
 
-    total = len(paths)
-    progress_bar = tqdm(
-        paths,
-        desc="Processing WSI",
-        unit="file",
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]",
-    )
-    for idx, path in enumerate(progress_bar, start=1):
-        start = time.time()
-        tissue = infer_tissue_type(path, args.input_dir)
-        progress_pct = 100.0 * idx / total
-        try:
-            thumb = load_thumbnail(path, args.thumb_side, args.cache_dir)
-            mask, tissue_ratio, used_fallback = build_tissue_mask(thumb)
-            feat = extract_features(
-                thumb,
-                mask,
-                tissue_ratio=tissue_ratio if not used_fallback else 0.0,
-                hsv_bins=args.hsv_bins,
-                glcm_levels=args.glcm_levels,
-                lbp_p=args.lbp_p,
-                lbp_r=args.lbp_r,
-            )
-            features.append(feat)
-            ok_rows.append(
-                {
-                    "path": path,
-                    "tissue_type": tissue,
-                    "tissue_ratio": tissue_ratio,
-                    "mask_fallback": int(used_fallback),
-                }
-            )
-            if used_fallback:
-                warnings += 1
-            log_ok(path, tissue, time.time() - start, tissue_ratio, progress_pct)
-        except Exception as e:
-            msg = str(e).replace("\n", " ")
-            failed_rows.append({"path": path, "tissue_type": tissue, "error": msg})
-            log_fail(path, msg, progress_pct)
+    tissue_names = sorted(tissue_to_paths.keys())
+    for tissue_idx, tissue in enumerate(tissue_names, start=1):
+        tissue_paths = tissue_to_paths[tissue]
+        tissue_start = time.time()
+        tissue_ok = 0
+        tissue_fail = 0
+        print(f"[TISSUE] {tissue_idx}/{len(tissue_names)} tissue={tissue} total={len(tissue_paths)}")
+        progress_bar = tqdm(
+            tissue_paths,
+            desc=f"{tissue}",
+            unit="wsi",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]",
+        )
+        for path in progress_bar:
+            try:
+                thumb = load_thumbnail(path, args.thumb_side, args.cache_dir)
+                mask, tissue_ratio, used_fallback = build_tissue_mask(thumb)
+                feat = extract_features(
+                    thumb,
+                    mask,
+                    tissue_ratio=tissue_ratio if not used_fallback else 0.0,
+                    hsv_bins=args.hsv_bins,
+                    glcm_levels=args.glcm_levels,
+                    lbp_p=args.lbp_p,
+                    lbp_r=args.lbp_r,
+                )
+                features.append(feat)
+                ok_rows.append(
+                    {
+                        "path": path,
+                        "tissue_type": tissue,
+                        "tissue_ratio": tissue_ratio,
+                        "mask_fallback": int(used_fallback),
+                    }
+                )
+                tissue_ok += 1
+                if used_fallback:
+                    warnings += 1
+            except Exception as e:
+                msg = str(e).replace("\n", " ")
+                failed_rows.append({"path": path, "tissue_type": tissue, "error": msg})
+                tissue_fail += 1
+        tissue_elapsed = time.time() - tissue_start
+        print(
+            f"[TISSUE_DONE] tissue={tissue} ok={tissue_ok} failed={tissue_fail} "
+            f"time={tissue_elapsed:.2f}s"
+        )
 
     n_ok = len(ok_rows)
     if n_ok == 0:
