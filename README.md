@@ -36,6 +36,7 @@ conda activate wsi_similarity
 python3 select_diverse_wsi.py \
   --input_dir /path/to/wsi_root \
   --extensions "svs,tif,tiff" \
+  --output_dir output \
   --thumb_side 512 \
   --top_frac 0.10 \
   --min_per_tissue 5 \
@@ -54,8 +55,11 @@ conda activate wsi_similarity
 python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_wsi.csv
 ```
 
+所有输出会统一写入 `output/`（可通过 `--output_dir` 修改）。若目录不存在会自动创建。
+
 ## 3. 关键参数
 
+- `--output_dir`: 输出目录，默认 `output`
 - `--input_dir`: WSI 目录
 - `--extensions`: 自动识别后缀（逗号分隔），默认 `svs,tif,tiff`
 - `--thumb_side`: 缩略图最大边长，默认 `512`
@@ -64,9 +68,9 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 - `--pca_dim`: PCA 维度，默认 `32`
 - `--hsv_bins`: HSV 直方图 bins，默认 `16`
 - `--glcm_levels`: GLCM levels，默认 `32`
-- `--out_csv`: 结果 CSV
-- `--out_failed_csv`: 失败清单 CSV（可选）
-- `--cache_dir`: 缩略图缓存目录（可选）
+- `--out_csv`: 结果 CSV 文件名（保存到 `output_dir`）
+- `--out_failed_csv`: 失败清单 CSV 文件名（保存到 `output_dir`）
+- `--cache_dir`: 缩略图缓存子目录名（创建在 `output_dir` 下）
 
 ## 4. 输出说明
 

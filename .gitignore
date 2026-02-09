@@ -4,6 +4,4 @@ __pycache__/
 *.pyd
 *.swp
 .DS_Store
-thumb_cache/
-selected_wsi.csv
-failed_wsi.csv
+output/

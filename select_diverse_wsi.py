@@ -19,6 +19,8 @@ from sklearn.metrics.pairwise import cosine_distances
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
+SCRIPT_VERSION = "0.3.0"
+
 try:
     import openslide  # type: ignore
 except Exception:
@@ -29,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Select diverse WSI samples via k-center/FPS on handcrafted features."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     parser.add_argument("--input_dir", type=str, required=True, help="WSI root directory.")
     parser.add_argument(
         "--extensions",
@@ -50,18 +53,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lbp_p", type=int, default=8, help="LBP P parameter.")
     parser.add_argument("--lbp_r", type=float, default=1.0, help="LBP R parameter.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
-    parser.add_argument("--out_csv", type=str, default="selected_wsi.csv", help="Output selected CSV.")
-    parser.add_argument("--out_failed_csv", type=str, default="", help="Optional failed CSV.")
-    parser.add_argument("--cache_dir", type=str, default="", help="Optional thumbnail cache directory.")
+    parser.add_argument("--output_dir", type=str, default="output", help="Unified output directory.")
+    parser.add_argument("--out_csv", type=str, default="selected_wsi.csv", help="Output selected CSV filename.")
+    parser.add_argument("--out_failed_csv", type=str, default="failed_wsi.csv", help="Failed CSV filename.")
+    parser.add_argument("--cache_dir", type=str, default="thumb_cache", help="Thumbnail cache subdirectory.")
     return parser.parse_args()
 
 
-def log_ok(path: str, tissue: str, elapsed: float, tissue_ratio: float) -> None:
-    print(f"[OK] tissue={tissue} path={path} time={elapsed:.3f}s tissue_ratio={tissue_ratio:.4f}")
+def log_ok(path: str, tissue: str, elapsed: float, tissue_ratio: float, progress_pct: float) -> None:
+    print(
+        f"[OK] progress={progress_pct:.1f}% tissue={tissue} "
+        f"path={path} time={elapsed:.3f}s tissue_ratio={tissue_ratio:.4f}"
+    )
 
 
-def log_fail(path: str, err: str) -> None:
-    print(f"[FAIL] path={path} err={err}")
+def log_fail(path: str, err: str, progress_pct: float) -> None:
+    print(f"[FAIL] progress={progress_pct:.1f}% path={path} err={err}")
 
 
 def discover_wsi_paths(input_dir: str, extensions: str) -> List[str]:
@@ -85,6 +92,18 @@ def infer_tissue_type(path: str, input_dir: str) -> str:
     if len(rel.parts) >= 2:
         return rel.parts[0]
     return "__root__"
+
+
+def ensure_output_paths(args: argparse.Namespace) -> argparse.Namespace:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    args.out_csv = str(output_dir / Path(args.out_csv).name)
+    if args.out_failed_csv:
+        args.out_failed_csv = str(output_dir / Path(args.out_failed_csv).name)
+    if args.cache_dir:
+        args.cache_dir = str(output_dir / Path(args.cache_dir).name)
+    return args
 
 
 def _thumb_cache_path(cache_dir: str, src_path: str, thumb_side: int) -> Path:
@@ -253,6 +272,7 @@ def kcenter_fps_select(X: np.ndarray, k: int) -> Tuple[List[int], np.ndarray]:
 def run(args: argparse.Namespace) -> int:
     np.random.seed(args.seed)
     t0 = time.time()
+    args = ensure_output_paths(args)
 
     paths = discover_wsi_paths(args.input_dir, args.extensions)
     if not paths:
@@ -264,9 +284,17 @@ def run(args: argparse.Namespace) -> int:
     failed_rows: List[Dict[str, str]] = []
     warnings = 0
 
-    for path in tqdm(paths, desc="Processing WSI"):
+    total = len(paths)
+    progress_bar = tqdm(
+        paths,
+        desc="Processing WSI",
+        unit="file",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]",
+    )
+    for idx, path in enumerate(progress_bar, start=1):
         start = time.time()
         tissue = infer_tissue_type(path, args.input_dir)
+        progress_pct = 100.0 * idx / total
         try:
             thumb = load_thumbnail(path, args.thumb_side, args.cache_dir)
             mask, tissue_ratio, used_fallback = build_tissue_mask(thumb)
@@ -290,11 +318,11 @@ def run(args: argparse.Namespace) -> int:
             )
             if used_fallback:
                 warnings += 1
-            log_ok(path, tissue, time.time() - start, tissue_ratio)
+            log_ok(path, tissue, time.time() - start, tissue_ratio, progress_pct)
         except Exception as e:
             msg = str(e).replace("\n", " ")
             failed_rows.append({"path": path, "tissue_type": tissue, "error": msg})
-            log_fail(path, msg)
+            log_fail(path, msg, progress_pct)
 
     n_ok = len(ok_rows)
     if n_ok == 0:
@@ -347,6 +375,7 @@ def run(args: argparse.Namespace) -> int:
     out_rows = sorted(out_rows, key=lambda x: (str(x["tissue_type"]), int(x["tissue_rank"])))
     for i, row in enumerate(out_rows, start=1):
         row["global_rank"] = i
+    selected_total = len(out_rows)
 
     pd.DataFrame(out_rows).to_csv(args.out_csv, index=False, quoting=csv.QUOTE_MINIMAL)
     if args.out_failed_csv:
@@ -356,7 +385,8 @@ def run(args: argparse.Namespace) -> int:
     avg = elapsed / max(1, len(paths))
     print(
         f"[SUMMARY] total={len(paths)} ok={n_ok} failed={len(failed_rows)} "
-        f"k={k} warnings={warnings} total_time={elapsed:.3f}s avg_time={avg:.3f}s"
+        f"selected={selected_total} warnings={warnings} "
+        f"total_time={elapsed:.3f}s avg_time={avg:.3f}s out_dir={args.output_dir}"
     )
     return 0
 
