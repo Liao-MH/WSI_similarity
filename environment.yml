@@ -1,0 +1,14 @@
+name: wsi_similarity
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - pillow
+  - opencv
+  - scikit-image
+  - scikit-learn
+  - tqdm
+  - openslide
+  - openslide-python

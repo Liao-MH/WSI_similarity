@@ -4,10 +4,28 @@
 
 ## 1. 安装
 
+### 方式 A：`venv`（已有方式）
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### 方式 B：`conda`（推荐用于 WSI/OpenSlide）
+
+```bash
+conda create -n wsi_similarity python=3.10 -y
+conda activate wsi_similarity
+conda install -c conda-forge openslide openslide-python -y
+pip install -r requirements.txt
+```
+
+或使用仓库内环境文件一键创建：
+
+```bash
+conda env create -f environment.yml
+conda activate wsi_similarity
 ```
 
 `svs` 读取建议安装 OpenSlide 系统库（`openslide-python` 仅为 Python 绑定）。若环境无 OpenSlide，脚本会自动尝试用 PIL fallback（适用于多数 tif）。
@@ -28,6 +46,13 @@ python3 select_diverse_wsi.py \
 ```
 
 脚本会递归扫描 `--input_dir` 下所有匹配后缀文件，并按一级子目录作为组织类型分组（例如 `Breast cancer N=137`）。
+
+若使用 conda，请先激活环境再运行：
+
+```bash
+conda activate wsi_similarity
+python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_wsi.csv
+```
 
 ## 3. 关键参数
 
