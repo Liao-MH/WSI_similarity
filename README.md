@@ -57,6 +57,8 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 
 所有输出会统一写入 `output/`（可通过 `--output_dir` 修改）。若目录不存在会自动创建。
 
+若 `output/selected_wsi.csv` 已存在，脚本会先读取其中历史已选的 WSI 路径，并在新一轮运行时自动排除这些样本；本轮新结果会继续追加到同一个 `selected_wsi.csv` 中，而不是覆盖旧结果。
+
 ## 3. 关键参数
 
 - `--output_dir`: 输出目录，默认 `output`
@@ -76,9 +78,10 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 
 ### `selected_wsi.csv`
 
+- `round`: 第几轮被选中（首次运行是 `1`，之后每次运行依次递增）
 - `tissue_type`: 组织类型（目录分组名）
-- `tissue_rank`: 该组织内排序（1..k）
-- `global_rank`: 全表排序
+- `tissue_rank`: 该轮内、该组织内排序（1..k）
+- `global_rank`: 该轮内全表排序
 - `path`: WSI 路径
 - `selected_by`: 固定 `kcenter`
 - `mean_cosine_distance`: 该样本到所属组织全体样本的平均余弦距离（诊断字段）
@@ -86,6 +89,8 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 - `mask_fallback`: 组织 mask 是否 fallback 到整图（0/1）
 - `group_total`: 该组织总数
 - `group_selected`: 该组织被选数量（`max(ceil(top_frac*N), min_per_tissue)`，并不超过 `N`）
+
+`selected_wsi.csv` 为累计历史账本：每次运行只会从“尚未出现在该 CSV 中”的 WSI 里继续挑选，并将新一轮结果追加到文件末尾。
 
 ### `failed_wsi.csv`（可选）
 
@@ -106,6 +111,7 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
    - 边缘密度与熵
 4. 标准化 + PCA。
 5. 每个组织独立执行标准化 + PCA + k-center/FPS（cosine distance）选择。
+6. 若已存在历史 `selected_wsi.csv`，则先排除历史已选样本，再对剩余样本执行本轮选择，并在结束时输出轮次摘要。
 
 ## 6. 退出码
 

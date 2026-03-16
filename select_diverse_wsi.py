@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -93,6 +93,31 @@ def ensure_output_paths(args: argparse.Namespace) -> argparse.Namespace:
     if args.cache_dir:
         args.cache_dir = str(output_dir / Path(args.cache_dir).name)
     return args
+
+
+def normalize_wsi_path(path: str) -> str:
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def load_selection_history(out_csv: str) -> Tuple[pd.DataFrame, Set[str], int]:
+    csv_path = Path(out_csv)
+    if not csv_path.exists():
+        return pd.DataFrame(), set(), 1
+
+    history_df = pd.read_csv(csv_path)
+    if history_df.empty:
+        return history_df, set(), 1
+
+    if "path" not in history_df.columns:
+        raise ValueError(f"Selection history is missing required 'path' column: {out_csv}")
+
+    if "round" not in history_df.columns:
+        history_df.insert(0, "round", 1)
+
+    history_df["round"] = history_df["round"].fillna(1).astype(int)
+    selected_paths = {normalize_wsi_path(path) for path in history_df["path"].astype(str).tolist()}
+    next_round = int(history_df["round"].max()) + 1
+    return history_df, selected_paths, next_round
 
 
 def _thumb_cache_path(cache_dir: str, src_path: str, thumb_side: int) -> Path:
@@ -262,16 +287,35 @@ def run(args: argparse.Namespace) -> int:
     np.random.seed(args.seed)
     t0 = time.time()
     args = ensure_output_paths(args)
+    history_df, previously_selected_paths, current_round = load_selection_history(args.out_csv)
 
     paths = discover_wsi_paths(args.input_dir, args.extensions)
     if not paths:
         print("No input files found.", file=sys.stderr)
         return 2
+    remaining_paths = [path for path in paths if normalize_wsi_path(path) not in previously_selected_paths]
 
     tissue_to_paths: Dict[str, List[str]] = {}
-    for path in paths:
+    for path in remaining_paths:
         tissue = infer_tissue_type(path, args.input_dir)
         tissue_to_paths.setdefault(tissue, []).append(path)
+
+    round_remaining_total = len(remaining_paths)
+    planned_round_total = sum(
+        max(args.min_per_tissue, int(math.ceil(args.top_frac * len(group_paths))))
+        for group_paths in tissue_to_paths.values()
+    )
+
+    if round_remaining_total == 0:
+        total_selected = len(history_df.index)
+        print(
+            f"经过 {current_round - 1} 轮挑选，共选过 {total_selected} 张 WSI，本轮还剩 0 张 WSI，已选择 0 张"
+        )
+        print(
+            f"[SUMMARY] total={len(paths)} ok=0 failed=0 selected=0 warnings=0 "
+            f"total_time={time.time() - t0:.3f}s avg_time=0.000s out_dir={args.output_dir}"
+        )
+        return 0
 
     features: List[np.ndarray] = []
     ok_rows: List[Dict[str, object]] = []
@@ -362,6 +406,7 @@ def run(args: argparse.Namespace) -> int:
             global_idx = group_indices[local_idx]
             out_rows.append(
                 {
+                    "round": current_round,
                     "tissue_type": tissue,
                     "tissue_rank": tissue_rank,
                     "path": ok_rows[global_idx]["path"],
@@ -378,13 +423,26 @@ def run(args: argparse.Namespace) -> int:
     for i, row in enumerate(out_rows, start=1):
         row["global_rank"] = i
     selected_total = len(out_rows)
-
-    pd.DataFrame(out_rows).to_csv(args.out_csv, index=False, quoting=csv.QUOTE_MINIMAL)
+    current_df = pd.DataFrame(out_rows)
+    combined_df = pd.concat([history_df, current_df], ignore_index=True, sort=False)
+    pd.DataFrame(combined_df).to_csv(args.out_csv, index=False, quoting=csv.QUOTE_MINIMAL)
     if args.out_failed_csv:
         pd.DataFrame(failed_rows).to_csv(args.out_failed_csv, index=False, quoting=csv.QUOTE_MINIMAL)
 
     elapsed = time.time() - t0
     avg = elapsed / max(1, len(paths))
+    cumulative_selected_total = len(combined_df.index)
+    if selected_total > 0:
+        summary = (
+            f"经过 {current_round} 轮挑选，共选过 {cumulative_selected_total} 张 WSI，"
+            f"本轮还剩 {round_remaining_total} 张 WSI，已选择 {selected_total} 张"
+        )
+        if round_remaining_total < planned_round_total:
+            summary += (
+                f"，因剩余数量'{round_remaining_total}'小于每轮挑选设定数量"
+                f"'{planned_round_total}'，已全部挑选"
+            )
+        print(summary)
     print(
         f"[SUMMARY] total={len(paths)} ok={n_ok} failed={len(failed_rows)} "
         f"selected={selected_total} warnings={warnings} "
