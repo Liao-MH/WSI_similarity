@@ -2,6 +2,8 @@
 
 基于缩略图和手工特征（颜色 + 纹理 + 结构）对 WSI 做多样性优先筛选，输出覆盖面最大的 Top-K（默认 10%），用于优先标注。
 
+当前版本：`v2.0.0`
+
 ## 1. 安装
 
 ### 方式 A：`venv`（已有方式）
@@ -59,6 +61,14 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 
 若 `output/selected_wsi.csv` 已存在，脚本会先读取其中历史已选的 WSI 路径，并在新一轮运行时自动排除这些样本；本轮新结果会继续追加到同一个 `selected_wsi.csv` 中，而不是覆盖旧结果。
 
+从 `v2.0.0` 开始，`selected_wsi.csv` 与 `failed_wsi.csv` 中的 `path` 均保存为“相对于 `--input_dir` 的相对路径”，以避免不同设备上的绝对路径差异影响续跑与对比。
+
+从 `v2.0.0` 开始，脚本不再提供 `--version` 命令行参数。
+
+若检测到旧版 `selected_wsi.csv` 中仍为绝对路径，脚本会在启动时自动将其迁移为相对路径后再继续运行；如果某条旧路径不属于当前 `--input_dir`，程序会直接报错并停止，而不会静默跳过。
+
+在数据集目录结构一致、`--seed` 一致、轮次一致的前提下，不同设备应得到相同的入选 slide。
+
 ## 3. 关键参数
 
 - `--output_dir`: 输出目录，默认 `output`
@@ -82,7 +92,7 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 - `tissue_type`: 组织类型（目录分组名）
 - `tissue_rank`: 该轮内、该组织内排序（1..k）
 - `global_rank`: 该轮内全表排序
-- `path`: WSI 路径
+- `path`: 相对于 `--input_dir` 的 WSI 路径
 - `selected_by`: 固定 `kcenter`
 - `mean_cosine_distance`: 该样本到所属组织全体样本的平均余弦距离（诊断字段）
 - `tissue_ratio`: 组织占比
@@ -90,11 +100,11 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 - `group_total`: 该组织总数
 - `group_selected`: 该组织被选数量（`max(ceil(top_frac*N), min_per_tissue)`，并不超过 `N`）
 
-`selected_wsi.csv` 为累计历史账本：每次运行只会从“尚未出现在该 CSV 中”的 WSI 里继续挑选，并将新一轮结果追加到文件末尾。
+`selected_wsi.csv` 为累计历史账本：每次运行只会从“尚未出现在该 CSV 中”的 WSI 里继续挑选，并将新一轮结果追加到文件末尾。若该文件中仍存在旧版绝对路径，脚本会先自动迁移成相对路径。
 
 ### `failed_wsi.csv`（可选）
 
-- `path`
+- `path`：相对于 `--input_dir` 的 WSI 路径
 - `tissue_type`
 - `error`
 
@@ -111,7 +121,8 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
    - 边缘密度与熵
 4. 标准化 + PCA。
 5. 每个组织独立执行标准化 + PCA + k-center/FPS（cosine distance）选择。
-6. 若已存在历史 `selected_wsi.csv`，则先排除历史已选样本，再对剩余样本执行本轮选择，并在结束时输出轮次摘要。
+6. 若已存在历史 `selected_wsi.csv`，则先将其中旧版绝对路径迁移为相对路径，再排除历史已选样本，对剩余样本执行本轮选择，并在结束时输出轮次摘要。
+7. 为保证跨设备复现，候选样本和组内样本会按相对路径稳定排序，PCA 使用确定性配置。
 
 ## 6. 退出码
 

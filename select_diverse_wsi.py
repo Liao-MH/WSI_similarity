@@ -19,7 +19,7 @@ from sklearn.metrics.pairwise import cosine_distances
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-SCRIPT_VERSION = "0.3.0"
+SCRIPT_VERSION = "v2.0.0"
 
 try:
     import openslide  # type: ignore
@@ -31,7 +31,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Select diverse WSI samples via k-center/FPS on handcrafted features."
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     parser.add_argument("--input_dir", type=str, required=True, help="WSI root directory.")
     parser.add_argument(
         "--extensions",
@@ -95,11 +94,29 @@ def ensure_output_paths(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def normalize_wsi_path(path: str) -> str:
-    return str(Path(path).expanduser().resolve(strict=False))
+def resolve_input_dir(input_dir: str) -> Path:
+    root = Path(input_dir).expanduser().resolve(strict=False)
+    if not root.exists():
+        raise FileNotFoundError(f"input_dir not found: {input_dir}")
+    return root
 
 
-def load_selection_history(out_csv: str) -> Tuple[pd.DataFrame, Set[str], int]:
+def canonical_relative_wsi_path(path: str, input_dir: Path) -> str:
+    raw_path = Path(path).expanduser()
+    if raw_path.is_absolute():
+        abs_path = raw_path.resolve(strict=False)
+    else:
+        abs_path = (input_dir / raw_path).resolve(strict=False)
+
+    # Canonicalize every path against input_dir so CSV history stays stable across devices.
+    try:
+        rel_path = abs_path.relative_to(input_dir)
+    except ValueError as exc:
+        raise ValueError(f"WSI path is outside the current input_dir: {path}") from exc
+    return rel_path.as_posix()
+
+
+def load_selection_history(out_csv: str, input_dir: str) -> Tuple[pd.DataFrame, Set[str], int]:
     csv_path = Path(out_csv)
     if not csv_path.exists():
         return pd.DataFrame(), set(), 1
@@ -111,11 +128,25 @@ def load_selection_history(out_csv: str) -> Tuple[pd.DataFrame, Set[str], int]:
     if "path" not in history_df.columns:
         raise ValueError(f"Selection history is missing required 'path' column: {out_csv}")
 
+    rewrite_history = False
     if "round" not in history_df.columns:
         history_df.insert(0, "round", 1)
+        rewrite_history = True
 
     history_df["round"] = history_df["round"].fillna(1).astype(int)
-    selected_paths = {normalize_wsi_path(path) for path in history_df["path"].astype(str).tolist()}
+    input_root = resolve_input_dir(input_dir)
+    normalized_paths: List[str] = []
+    for raw_path in history_df["path"].astype(str).tolist():
+        normalized_path = canonical_relative_wsi_path(raw_path, input_root)
+        normalized_paths.append(normalized_path)
+        if raw_path != normalized_path:
+            rewrite_history = True
+
+    history_df["path"] = normalized_paths
+    if rewrite_history:
+        history_df.to_csv(csv_path, index=False, quoting=csv.QUOTE_MINIMAL)
+
+    selected_paths = set(normalized_paths)
     next_round = int(history_df["round"].max()) + 1
     return history_df, selected_paths, next_round
 
@@ -287,20 +318,30 @@ def run(args: argparse.Namespace) -> int:
     np.random.seed(args.seed)
     t0 = time.time()
     args = ensure_output_paths(args)
-    history_df, previously_selected_paths, current_round = load_selection_history(args.out_csv)
+    input_root = resolve_input_dir(args.input_dir)
+    history_df, previously_selected_paths, current_round = load_selection_history(args.out_csv, args.input_dir)
 
-    paths = discover_wsi_paths(args.input_dir, args.extensions)
-    if not paths:
+    discovered_paths = discover_wsi_paths(args.input_dir, args.extensions)
+    if not discovered_paths:
         print("No input files found.", file=sys.stderr)
         return 2
-    remaining_paths = [path for path in paths if normalize_wsi_path(path) not in previously_selected_paths]
 
-    tissue_to_paths: Dict[str, List[str]] = {}
-    for path in remaining_paths:
-        tissue = infer_tissue_type(path, args.input_dir)
-        tissue_to_paths.setdefault(tissue, []).append(path)
+    path_records = [
+        (canonical_relative_wsi_path(path, input_root), path) for path in discovered_paths
+    ]
+    path_records = sorted(path_records, key=lambda item: item[0])
+    remaining_records = [
+        (relative_path, absolute_path)
+        for relative_path, absolute_path in path_records
+        if relative_path not in previously_selected_paths
+    ]
 
-    round_remaining_total = len(remaining_paths)
+    tissue_to_paths: Dict[str, List[Tuple[str, str]]] = {}
+    for relative_path, absolute_path in remaining_records:
+        tissue = infer_tissue_type(absolute_path, args.input_dir)
+        tissue_to_paths.setdefault(tissue, []).append((relative_path, absolute_path))
+
+    round_remaining_total = len(remaining_records)
     planned_round_total = sum(
         max(args.min_per_tissue, int(math.ceil(args.top_frac * len(group_paths))))
         for group_paths in tissue_to_paths.values()
@@ -312,7 +353,7 @@ def run(args: argparse.Namespace) -> int:
             f"经过 {current_round - 1} 轮挑选，共选过 {total_selected} 张 WSI，本轮还剩 0 张 WSI，已选择 0 张"
         )
         print(
-            f"[SUMMARY] total={len(paths)} ok=0 failed=0 selected=0 warnings=0 "
+            f"[SUMMARY] total={len(path_records)} ok=0 failed=0 selected=0 warnings=0 "
             f"total_time={time.time() - t0:.3f}s avg_time=0.000s out_dir={args.output_dir}"
         )
         return 0
@@ -324,7 +365,7 @@ def run(args: argparse.Namespace) -> int:
 
     tissue_names = sorted(tissue_to_paths.keys())
     for tissue_idx, tissue in enumerate(tissue_names, start=1):
-        tissue_paths = tissue_to_paths[tissue]
+        tissue_paths = sorted(tissue_to_paths[tissue], key=lambda item: item[0])
         tissue_start = time.time()
         tissue_ok = 0
         tissue_fail = 0
@@ -335,9 +376,9 @@ def run(args: argparse.Namespace) -> int:
             unit="wsi",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]",
         )
-        for path in progress_bar:
+        for relative_path, absolute_path in progress_bar:
             try:
-                thumb = load_thumbnail(path, args.thumb_side, args.cache_dir)
+                thumb = load_thumbnail(absolute_path, args.thumb_side, args.cache_dir)
                 mask, tissue_ratio, used_fallback = build_tissue_mask(thumb)
                 feat = extract_features(
                     thumb,
@@ -351,7 +392,7 @@ def run(args: argparse.Namespace) -> int:
                 features.append(feat)
                 ok_rows.append(
                     {
-                        "path": path,
+                        "path": relative_path,
                         "tissue_type": tissue,
                         "tissue_ratio": tissue_ratio,
                         "mask_fallback": int(used_fallback),
@@ -362,7 +403,7 @@ def run(args: argparse.Namespace) -> int:
                     warnings += 1
             except Exception as e:
                 msg = str(e).replace("\n", " ")
-                failed_rows.append({"path": path, "tissue_type": tissue, "error": msg})
+                failed_rows.append({"path": relative_path, "tissue_type": tissue, "error": msg})
                 tissue_fail += 1
         tissue_elapsed = time.time() - tissue_start
         print(
@@ -394,7 +435,7 @@ def run(args: argparse.Namespace) -> int:
         scaler = StandardScaler()
         group_Fz = scaler.fit_transform(group_F)
         pca_dim = max(1, min(args.pca_dim, group_Fz.shape[0], group_Fz.shape[1]))
-        group_X = PCA(n_components=pca_dim, random_state=args.seed).fit_transform(group_Fz)
+        group_X = PCA(n_components=pca_dim, svd_solver="full", random_state=args.seed).fit_transform(group_Fz)
         local_selected, group_mean_dist = kcenter_fps_select(group_X, k)
 
         if len(local_selected) < k:
@@ -430,7 +471,7 @@ def run(args: argparse.Namespace) -> int:
         pd.DataFrame(failed_rows).to_csv(args.out_failed_csv, index=False, quoting=csv.QUOTE_MINIMAL)
 
     elapsed = time.time() - t0
-    avg = elapsed / max(1, len(paths))
+    avg = elapsed / max(1, len(path_records))
     cumulative_selected_total = len(combined_df.index)
     if selected_total > 0:
         summary = (
@@ -444,7 +485,7 @@ def run(args: argparse.Namespace) -> int:
             )
         print(summary)
     print(
-        f"[SUMMARY] total={len(paths)} ok={n_ok} failed={len(failed_rows)} "
+        f"[SUMMARY] total={len(path_records)} ok={n_ok} failed={len(failed_rows)} "
         f"selected={selected_total} warnings={warnings} "
         f"total_time={elapsed:.3f}s avg_time={avg:.3f}s out_dir={args.output_dir}"
     )
