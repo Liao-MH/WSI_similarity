@@ -2,7 +2,7 @@
 
 基于缩略图和手工特征（颜色 + 纹理 + 结构）对 WSI 做多样性优先筛选，输出覆盖面最大的 Top-K（默认 10%），用于优先标注。
 
-当前版本：`v2.0.0`
+当前版本：`v2.0.1`
 
 ## 1. 安装
 
@@ -61,9 +61,9 @@ python3 select_diverse_wsi.py --input_dir /path/to/wsi_root --out_csv selected_w
 
 若 `output/selected_wsi.csv` 已存在，脚本会先读取其中历史已选的 WSI 路径，并在新一轮运行时自动排除这些样本；本轮新结果会继续追加到同一个 `selected_wsi.csv` 中，而不是覆盖旧结果。
 
-从 `v2.0.0` 开始，`selected_wsi.csv` 与 `failed_wsi.csv` 中的 `path` 均保存为“相对于 `--input_dir` 的相对路径”，以避免不同设备上的绝对路径差异影响续跑与对比。
+当前实现中，`selected_wsi.csv` 与 `failed_wsi.csv` 中的 `path` 均保存为“相对于 `--input_dir` 的相对路径”，以避免不同设备上的绝对路径差异影响续跑与对比。
 
-从 `v2.0.0` 开始，脚本不再提供 `--version` 命令行参数。
+当前实现中，脚本不再提供 `--version` 命令行参数。
 
 若检测到旧版 `selected_wsi.csv` 中仍为绝对路径，脚本会在启动时自动将其迁移为相对路径后再继续运行；如果某条旧路径不属于当前 `--input_dir`，程序会直接报错并停止，而不会静默跳过。
 

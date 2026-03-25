@@ -19,7 +19,7 @@ from sklearn.metrics.pairwise import cosine_distances
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-SCRIPT_VERSION = "v2.0.0"
+SCRIPT_VERSION = "v2.0.1"
 
 try:
     import openslide  # type: ignore

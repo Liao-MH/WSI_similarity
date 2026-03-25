@@ -1,5 +1,7 @@
 # WSI 数据集多样性优先标注筛选（k-center）需求文档（Codex 友好版）
 
+当前对齐版本：`v2.0.1`
+
 > 目标：在 给定的WSI 数据集（主文件夹及代表不同组织的子文件夹）中筛选 **多样性最高（覆盖面最大）** 的前 10% WSI，用于优先标注，提升标注效率。  
 > 策略：**k-center / Farthest Point Sampling（FPS）** 在低维嵌入空间中做“覆盖面最大化”的代表性采样。  
 > 约束：**计算资源友好、快速实现、无需大模型/Transformer 特征**，面向 `.svs` 与 `.tif`。
@@ -65,10 +67,13 @@
 ### 4.2 输出
 - CSV：`selected_wsi.csv`（字段建议）
   - `rank`: 1..k
-  - `path`: 文件绝对/相对路径
+  - `path`: 相对于 `--input_dir` 的相对路径
   - `selected_by`: 固定值 `kcenter`
   - `optional_metrics`（可选）：例如 mean cosine similarity（仅用于解释/诊断）
-- 可选：`failed_wsi.csv`（失败文件路径 + 错误信息）
+- `selected_wsi.csv` 为累计历史账本：若文件已存在，程序应先排除其中历史已选样本，再将本轮结果追加到文件末尾
+- 若检测到旧版历史 CSV 仍使用绝对路径，程序应在启动时自动迁移为相对路径
+- 若旧版历史路径无法映射到当前 `--input_dir` 下，程序应直接报错，不允许静默跳过
+- 可选：`failed_wsi.csv`（失败文件相对路径 + 错误信息）
 - 可选：thumbnail 缓存目录 `thumb_cache/`（便于复跑加速）
 
 ---
@@ -110,6 +115,7 @@
 ### 5.4 标准化与降维
 - `StandardScaler`：各维归一化到零均值单位方差
 - `PCA(n_components=pca_dim)`：默认 32，范围建议 16–64
+- 为保证不同设备在相同目录结构和相同 seed 下得到相同结果，PCA 应使用确定性配置
 - 输出：嵌入矩阵 `X`（N×pca_dim）
 
 ### 5.5 多样性选择：k-center / FPS
@@ -121,6 +127,7 @@
   - 维护每个点到已选集合的最小距离 `min_dist`
   - 每次选择 `argmax(min_dist)` 作为下一个中心
   - 更新 `min_dist = min(min_dist, dist_to_new_center)`
+- 为保证跨设备复现，候选样本和组内样本应按相对路径稳定排序后再进入特征矩阵与选择流程
 
 ---
 
@@ -156,14 +163,25 @@
 
 ### 7.2 关键参数（必须支持）
 - `--input_dir`：WSI 目录
-- `--pattern`：glob pattern（如 `*.svs` 或 `*.tif`）
-- `--input_list`：可选，显式文件列表（优先级高于 input_dir）
+- `--extensions`：递归扫描文件后缀（如 `svs,tif,tiff`）
 - `--thumb_side`
 - `--top_frac`
+- `--min_per_tissue`
 - `--pca_dim`
+- `--hsv_bins`
+- `--glcm_levels`
+- `--lbp_p`
+- `--lbp_r`
+- `--seed`
+- `--output_dir`
 - `--out_csv`
 - `--out_failed_csv`（可选）
 - `--cache_dir`（可选）
+
+当前实现不再支持：
+- `--version`
+- `--pattern`
+- `--input_list`
 
 ### 7.3 返回码
 - `0`：成功且输出 CSV
@@ -173,6 +191,7 @@
 - 每张 WSI 处理：`[OK] path=... time=... tissue_ratio=...`
 - 失败：`[FAIL] path=... err=...`
 - 总结：N、k、失败数、总耗时、均耗时
+- 若存在历史账本，应输出当前轮次、累计已选数量、本轮剩余数量与本轮新选数量
 
 ---
 
@@ -181,7 +200,9 @@
 ### 8.1 功能正确性
 - 输入 N 张 WSI，输出 k=ceil(0.1*N) 条记录（除非失败导致可用数不足）
 - 输出 CSV 字段完整且路径可用
-- k-center 选择结果可复现（固定随机种子或确定性初始化）
+- `selected_wsi.csv` 与 `failed_wsi.csv` 中的 `path` 均为相对 `--input_dir` 的相对路径
+- 旧版绝对路径历史 CSV 可自动迁移；无法迁移时显式报错
+- k-center 选择结果可复现（固定随机种子、确定性 PCA、稳定排序）
 
 ### 8.2 性能与资源
 - 处理每张 WSI 仅依赖缩略图（无全分辨率读入）
@@ -253,4 +274,5 @@ WSI 支持（推荐）：
 ---
 
 ### 版本信息
-- 文档生成日期：2026-02-09
+- 当前对齐日期：2026-03-25
+- 当前对齐版本：v2.0.1
